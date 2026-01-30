@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MotoGuard AI - Smart Ignition System</title>
+    
+    <!-- TensorFlow.js and MobileNet -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.11.0"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet@2.1.0"></script>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Font Awesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <style>
+        body { 
+            background-color: #050505; 
+            color: #e0f2fe; 
+            font-family: 'Courier New', Courier, monospace;
+            overflow: hidden;
+        }
+
+        /* Scanline effect */
+        .scanlines {
+            background: linear-gradient(
+                to bottom,
+                rgba(255,255,255,0),
+                rgba(255,255,255,0) 50%,
+                rgba(0,0,0,0.2) 50%,
+                rgba(0,0,0,0.2)
+            );
+            background-size: 100% 4px;
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        /* HUD Glow */
+        .hud-border {
+            box-shadow: 0 0 15px rgba(14, 165, 233, 0.3), inset 0 0 20px rgba(14, 165, 233, 0.1);
+            border: 1px solid rgba(14, 165, 233, 0.5);
+        }
+
+        .hud-text-shadow {
+            text-shadow: 0 0 5px rgba(14, 165, 233, 0.8);
+        }
+        
+        .alert-text-shadow {
+            text-shadow: 0 0 5px rgba(239, 68, 68, 0.8);
+        }
+
+        .success-text-shadow {
+            text-shadow: 0 0 5px rgba(34, 197, 94, 0.8);
+        }
+
+        /* Animations */
+        @keyframes pulse-red {
+            0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+        }
+
+        @keyframes pulse-green {
+            0% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7); }
+            70% { box-shadow: 0 0 0 15px rgba(34, 197, 94, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+        }
+
+        .animate-pulse-red { animation: pulse-red 2s infinite; }
+        .animate-pulse-green { animation: pulse-green 1.5s infinite; }
+
+        .engine-vibrate {
+            animation: vibrate 0.1s infinite;
+        }
+
+        @keyframes vibrate {
+            0% { transform: translate(0, 0); }
+            25% { transform: translate(1px, 1px); }
+            50% { transform: translate(-1px, -1px); }
+            75% { transform: translate(-1px, 1px); }
+            100% { transform: translate(1px, -1px); }
+        }
+
+        /* Ignition Button */
+        #ignition-btn {
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        
+        #ignition-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            filter: grayscale(100%);
+        }
+
+        #ignition-btn:not(:disabled):active {
+            transform: scale(0.95);
+        }
+
+        .scanner-line {
+            position: absolute;
+            width: 100%;
+            height: 2px;
+            background: rgba(14, 165, 233, 0.8);
+            box-shadow: 0 0 10px #0ea5e9;
+            animation: scan 2s linear infinite;
+            top: 0;
+        }
+
+        @keyframes scan {
+            0% { top: 0%; opacity: 0; }
+            10% { opacity: 1; }
+            90% { opacity: 1; }
+            100% { top: 100%; opacity: 0; }
+        }
+
+        /* Prediction List */
+        .pred-item {
+            display: flex;
+            justify-content: space-between;
+            font-size: 10px;
+            margin-bottom: 2px;
+            color: #94a3b8;
+        }
+        .pred-item.match {
+            color: #22d3ee;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Loading Screen -->
+    <div id="loader" class="fixed inset-0 bg-black z-50 flex flex-col items-center justify-center text-cyan-400">
+        <i class="fas fa-microchip fa-spin text-5xl mb-4"></i>
+        <h2 class="text-xl font-bold tracking-widest">LOADING NEURAL NETWORK...</h2>
+        <p class="text-xs text-cyan-700 mt-2">Initializing MobileNet Model</p>
+    </div>
+
+    <!-- Main App -->
+    <div class="relative w-full h-screen flex flex-col md:flex-row p-4 gap-4 bg-gray-900">
+        
+        <div class="scanlines"></div>
+
+        <!-- Left Panel: Video Feed -->
+        <div class="relative flex-1 bg-black rounded-lg border-2 border-cyan-900 overflow-hidden flex flex-col">
+            <!-- Header -->
+            <div class="absolute top-0 left-0 w-full bg-cyan-900/20 p-2 flex justify-between items-center z-20 backdrop-blur-sm">
+                <div class="flex items-center gap-2">
+                    <div class="w-3 h-3 bg-red-500 rounded-full animate-pulse" id="cam-indicator"></div>
+                    <span class="text-xs font-bold text-cyan-400 tracking-widest">CAM_01 // CENTER_CROP_MODE</span>
+                </div>
+                <div class="text-xs text-cyan-600">FPS: <span id="fps-counter">0</span></div>
+            </div>
+
+            <!-- Video -->
+            <div class="relative flex-grow flex items-center justify-center overflow-hidden bg-black">
+                <!-- Video is hidden or behind, we might display canvas instead for debug, but here we show full video and crop logically -->
+                <video id="webcam" autoplay muted playsinline class="absolute min-w-full min-h-full object-cover opacity-60"></video>
+                
+                <div class="scanner-line z-10"></div>
+                
+                <!-- Target Reticle (The ROI) -->
+                <div class="absolute inset-0 z-10 pointer-events-none flex items-center justify-center">
+                    <div class="relative">
+                        <!-- Reticle Box -->
+                        <div class="w-64 h-64 border-2 border-cyan-500/50 rounded-lg flex items-center justify-center relative bg-cyan-500/5">
+                            <div class="absolute top-0 left-0 w-4 h-4 border-t-2 border-l-2 border-cyan-400"></div>
+                            <div class="absolute top-0 right-0 w-4 h-4 border-t-2 border-r-2 border-cyan-400"></div>
+                            <div class="absolute bottom-0 left-0 w-4 h-4 border-b-2 border-l-2 border-cyan-400"></div>
+                            <div class="absolute bottom-0 right-0 w-4 h-4 border-b-2 border-r-2 border-cyan-400"></div>
+                            
+                            <!-- Crosshair -->
+                            <div class="w-4 h-4 border border-cyan-500/30 rounded-full"></div>
+                        </div>
+                        <div class="text-cyan-500 text-[10px] text-center mt-2 tracking-widest">ALIGN HELMET HERE</div>
+                    </div>
+                </div>
+
+                <!-- Prediction Overlay -->
+                <div id="prediction-box" class="absolute bottom-4 left-4 bg-black/80 border border-cyan-500 p-3 rounded backdrop-blur-md z-20 w-64">
+                    <div class="text-[10px] text-cyan-600 uppercase mb-2 border-b border-cyan-900 pb-1 flex justify-between">
+                        <span>AI Analysis (Top 3)</span>
+                        <span id="confidence-val">0%</span>
+                    </div>
+                    
+                    <div id="prediction-list" class="flex flex-col gap-1">
+                        <!-- Populated by JS -->
+                        <div class="text-gray-500 text-xs">Waiting for data...</div>
+                    </div>
+
+                    <div class="w-full bg-gray-800 h-1 mt-3 rounded-full overflow-hidden">
+                        <div id="confidence-bar" class="h-full bg-cyan-500 w-0 transition-all duration-300"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Panel: Dashboard -->
+        <div class="w-full md:w-96 flex flex-col gap-4">
+            
+            <!-- Status Module -->
+            <div class="bg-gray-900/80 border border-gray-700 p-4 rounded-lg flex flex-col items-center justify-center relative overflow-hidden transition-colors duration-500" id="status-panel">
+                <div class="absolute top-2 right-2 text-[10px] text-gray-500">SYS_STATUS</div>
+                
+                <div id="lock-icon" class="text-6xl text-red-500 mb-2 transition-all duration-500">
+                    <i class="fas fa-lock"></i>
+                </div>
+                
+                <h2 id="status-title" class="text-2xl font-black italic tracking-tighter text-red-500 alert-text-shadow text-center">IGNITION LOCKED</h2>
+                <p id="status-desc" class="text-xs text-red-400 text-center mt-1">HELMET NOT DETECTED</p>
+                
+                <!-- Stability Indicator -->
+                <div class="mt-3 flex gap-1">
+                    <div class="w-2 h-2 rounded-full bg-gray-700" id="stab-1"></div>
+                    <div class="w-2 h-2 rounded-full bg-gray-700" id="stab-2"></div>
+                    <div class="w-2 h-2 rounded-full bg-gray-700" id="stab-3"></div>
+                    <div class="w-2 h-2 rounded-full bg-gray-700" id="stab-4"></div>
+                    <div class="w-2 h-2 rounded-full bg-gray-700" id="stab-5"></div>
+                </div>
+            </div>
+
+            <!-- Ignition Module -->
+            <div class="flex-1 bg-black/50 border border-gray-800 rounded-lg p-6 flex flex-col items-center justify-center relative">
+                <div class="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] opacity-20"></div>
+                
+                <button id="ignition-btn" disabled onclick="startEngine()" class="relative z-10 w-48 h-48 rounded-full border-4 border-gray-700 bg-gray-800 text-gray-500 flex flex-col items-center justify-center shadow-2xl transition-all">
+                    <div class="text-sm font-bold mb-1">ENGINE</div>
+                    <div class="text-3xl font-black">START</div>
+                    <div class="text-[10px] mt-2 tracking-widest">PUSH TO START</div>
+                </button>
+            </div>
+
+            <!-- Settings / Console -->
+            <div class="bg-black border border-cyan-900/30 p-4 rounded-lg text-xs font-mono text-cyan-600">
+                <div class="flex justify-between items-center mb-2 border-b border-cyan-900/30 pb-2">
+                    <span>DEBUG CONSOLE</span>
+                    <span class="animate-pulse">● LIVE</span>
+                </div>
+                <div class="space-y-2">
+                    <div class="flex justify-between">
+                        <span>MODEL:</span>
+                        <span class="text-cyan-400">MobileNet_v2 (ROI Crop)</span>
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <span>TEST MODE:</span>
+                        <label class="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" id="test-mode-toggle" class="sr-only peer">
+                            <div class="w-9 h-5 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-cyan-600"></div>
+                        </label>
+                    </div>
+                    <p class="text-[10px] text-gray-500 mt-2 italic">
+                        *Test Mode accepts: Cell Phone, Mug, Bottle.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Engine Start Overlay -->
+    <div id="engine-overlay" class="fixed inset-0 bg-green-900/90 z-40 hidden flex flex-col items-center justify-center pointer-events-none">
+        <h1 class="text-6xl font-black text-white italic tracking-tighter success-text-shadow animate-bounce">ENGINE STARTED</h1>
+        <div class="text-2xl text-green-200 mt-4 font-mono">DRIVE SAFELY</div>
+        <i class="fas fa-tachometer-alt text-9xl text-white mt-8 animate-pulse"></i>
+    </div>
+
+    <script>
+        // --- Configuration ---
+        const CONF = {
+            THRESHOLD: 0.20, // Lowered threshold because we check Top 3
+            TARGET_CLASS: ['crash helmet', 'helmet', 'bicycle helmet', 'football helmet', 'mask'],
+            TEST_CLASSES: ['cellphone', 'cellular telephone', 'coffee mug', 'cup', 'water bottle', 'remote control', 'joystick'],
+            REQUIRED_HITS: 5, // Consecutive frames needed to unlock
+            REQUIRED_MISSES: 20 // Consecutive frames needed to lock
+        };
+
+        // --- State ---
+        let model = null;
+        let video = document.getElementById('webcam');
+        let offscreenCanvas = document.createElement('canvas');
+        let ctx = offscreenCanvas.getContext('2d');
+        
+        let isEngineRunning = false;
+        let isHelmetDetected = false;
+        let isTestMode = false;
+        let lastFrameTime = 0;
+        
+        // Stability Counters
+        let hitStreak = 0;
+        let missStreak = 0;
+
+        // --- Elements ---
+        const els = {
+            loader: document.getElementById('loader'),
+            predList: document.getElementById('prediction-list'),
+            confidenceBar: document.getElementById('confidence-bar'),
+            confidenceVal: document.getElementById('confidence-val'),
+            statusPanel: document.getElementById('status-panel'),
+            statusTitle: document.getElementById('status-title'),
+            statusDesc: document.getElementById('status-desc'),
+            lockIcon: document.getElementById('lock-icon'),
+            ignitionBtn: document.getElementById('ignition-btn'),
+            fps: document.getElementById('fps-counter'),
+            engineOverlay: document.getElementById('engine-overlay'),
+            testMode: document.getElementById('test-mode-toggle'),
+            stabDots: [
+                document.getElementById('stab-1'),
+                document.getElementById('stab-2'),
+                document.getElementById('stab-3'),
+                document.getElementById('stab-4'),
+                document.getElementById('stab-5')
+            ]
+        };
+
+        // --- Initialization ---
+        async function init() {
+            try {
+                // Set canvas size for the crop (MobileNet expects 224x224 usually, but we can send larger)
+                offscreenCanvas.width = 224;
+                offscreenCanvas.height = 224;
+
+                console.log('Loading MobileNet...');
+                model = await mobilenet.load();
+                console.log('Model loaded.');
+                els.loader.classList.add('hidden');
+
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'user', width: 640, height: 480 },
+                    audio: false
+                });
+                video.srcObject = stream;
+                
+                video.onloadeddata = () => {
+                    detectFrame();
+                };
+
+            } catch (err) {
+                console.error(err);
+                els.loader.innerHTML = `<div class="text-red-500 text-center">ERROR INITIALIZING<br>${err.message}</div>`;
+            }
+        }
+
+        // --- Main Detection Loop ---
+        async function detectFrame() {
+            if (!model || isEngineRunning) return;
+
+            // Stats
+            const now = performance.now();
+            const fps = 1000 / (now - lastFrameTime);
+            lastFrameTime = now;
+            els.fps.innerText = Math.round(fps);
+
+            // 1. CROP VIDEO CENTER
+            // We want to grab the center square of the video
+            const size = Math.min(video.videoWidth, video.videoHeight) * 0.6; // Crop 60% of min dimension
+            const sx = (video.videoWidth - size) / 2;
+            const sy = (video.videoHeight - size) / 2;
+
+            ctx.drawImage(video, sx, sy, size, size, 0, 0, 224, 224);
+
+            // 2. CLASSIFY THE CROP
+            const predictions = await model.classify(offscreenCanvas, 3); // Get Top 3
+            
+            // 3. PROCESS RESULTS
+            processPredictions(predictions);
+
+            requestAnimationFrame(detectFrame);
+        }
+
+        // --- Logic ---
+        function processPredictions(predictions) {
+            if (predictions.length === 0) return;
+
+            // Define valid classes
+            const validClasses = isTestMode ? [...CONF.TARGET_CLASS, ...CONF.TEST_CLASSES] : CONF.TARGET_CLASS;
+            
+            // Render Debug List
+            els.predList.innerHTML = '';
+            let bestScore = 0;
+            let matchFound = false;
+
+            predictions.forEach(p => {
+                const name = p.className.toLowerCase();
+                const score = p.probability;
+                const isMatch = validClasses.some(valid => name.includes(valid));
+                
+                if (isMatch && score > CONF.THRESHOLD) {
+                    matchFound = true;
+                    if (score > bestScore) bestScore = score;
+                }
+
+                // UI Item
+                const div = document.createElement('div');
+                div.className = `pred-item ${isMatch ? 'match' : ''}`;
+                div.innerHTML = `<span>${name.substring(0, 18)}</span><span>${Math.round(score*100)}%</span>`;
+                els.predList.appendChild(div);
+            });
+
+            // Update Bars
+            els.confidenceBar.style.width = `${Math.min(bestScore * 100, 100)}%`;
+            els.confidenceVal.innerText = matchFound ? Math.round(bestScore * 100) + '%' : '0%';
+
+            // STABILITY LOGIC
+            updateStability(matchFound);
+        }
+
+        function updateStability(isMatch) {
+            if (isMatch) {
+                hitStreak++;
+                missStreak = 0;
+            } else {
+                missStreak++;
+                // Don't reset hitStreak immediately, decay it or hard reset?
+                // Hard reset is safer for lock, but we want debounce for unlock.
+                // If we miss one frame, we shouldn't lose all progress immediately? 
+                // Let's reset hit streak if we miss.
+                hitStreak = 0; 
+            }
+
+            // Update Dots UI (Visualizing progress to unlock)
+            const progress = Math.min(hitStreak, 5);
+            els.stabDots.forEach((dot, idx) => {
+                dot.className = idx < progress ? 'w-2 h-2 rounded-full bg-cyan-400 shadow-[0_0_5px_#22d3ee]' : 'w-2 h-2 rounded-full bg-gray-700';
+            });
+
+            // Trigger State Changes
+            if (!isHelmetDetected && hitStreak >= CONF.REQUIRED_HITS) {
+                setReadyState(true);
+            } else if (isHelmetDetected && missStreak >= CONF.REQUIRED_MISSES) {
+                setReadyState(false);
+            }
+        }
+
+        function setReadyState(ready) {
+            isHelmetDetected = ready;
+            
+            if (ready) {
+                // UI: Ready
+                els.statusPanel.className = "bg-green-900/30 border border-green-500 p-4 rounded-lg flex flex-col items-center justify-center relative overflow-hidden transition-colors duration-500";
+                els.lockIcon.className = "text-6xl text-green-500 mb-2 transition-all duration-500";
+                els.lockIcon.innerHTML = '<i class="fas fa-unlock"></i>';
+                els.statusTitle.className = "text-2xl font-black italic tracking-tighter text-green-500 success-text-shadow text-center";
+                els.statusTitle.innerText = "SYSTEM ARMED";
+                els.statusDesc.className = "text-xs text-green-400 text-center mt-1";
+                els.statusDesc.innerText = "HELMET VERIFIED. IGNITION ENABLED.";
+                
+                // Button
+                els.ignitionBtn.disabled = false;
+                els.ignitionBtn.className = "animate-pulse-green relative z-10 w-48 h-48 rounded-full border-4 border-green-500 bg-green-600 text-white flex flex-col items-center justify-center shadow-[0_0_30px_rgba(34,197,94,0.6)] cursor-pointer hover:scale-105 transition-transform";
+
+            } else {
+                // UI: Locked
+                els.statusPanel.className = "bg-gray-900/80 border border-gray-700 p-4 rounded-lg flex flex-col items-center justify-center relative overflow-hidden transition-colors duration-500";
+                els.lockIcon.className = "text-6xl text-red-500 mb-2 transition-all duration-500";
+                els.lockIcon.innerHTML = '<i class="fas fa-lock"></i>';
+                els.statusTitle.className = "text-2xl font-black italic tracking-tighter text-red-500 alert-text-shadow text-center";
+                els.statusTitle.innerText = "IGNITION LOCKED";
+                els.statusDesc.className = "text-xs text-red-400 text-center mt-1";
+                els.statusDesc.innerText = "HELMET NOT DETECTED";
+
+                // Button
+                els.ignitionBtn.disabled = true;
+                els.ignitionBtn.className = "relative z-10 w-48 h-48 rounded-full border-4 border-gray-700 bg-gray-800 text-gray-500 flex flex-col items-center justify-center shadow-none opacity-50 cursor-not-allowed";
+            }
+        }
+
+        window.startEngine = function() {
+            if (!isHelmetDetected) return;
+            
+            isEngineRunning = true;
+            document.body.classList.add('engine-vibrate');
+            
+            // Play Sound
+            playEngineSound();
+
+            // Show Overlay
+            els.engineOverlay.classList.remove('hidden');
+            els.engineOverlay.classList.add('flex');
+            
+            console.log("IGNITION_SIGNAL_SENT: 1");
+            
+            // Reset after 5 seconds
+            setTimeout(() => {
+                isEngineRunning = false;
+                document.body.classList.remove('engine-vibrate');
+                els.engineOverlay.classList.add('hidden');
+                els.engineOverlay.classList.remove('flex');
+                
+                // Reset stats to force re-check
+                hitStreak = 0;
+                setReadyState(false); 
+                
+                detectFrame(); 
+            }, 5000);
+        };
+
+        // --- Sound Synthesis (Web Audio API) ---
+        function playEngineSound() {
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContext) return;
+
+            const ctx = new AudioContext();
+            const t = ctx.currentTime;
+            const duration = 4.0;
+
+            // Master Gain (Volume Control)
+            const masterGain = ctx.createGain();
+            masterGain.connect(ctx.destination);
+            masterGain.gain.setValueAtTime(0.5, t);
+            masterGain.gain.exponentialRampToValueAtTime(0.01, t + duration); // Fade out
+
+            // Oscillator 1: The "Roar" (Sawtooth wave)
+            const osc1 = ctx.createOscillator();
+            osc1.type = 'sawtooth';
+            osc1.connect(masterGain);
+            
+            // Pitch Envelope (Rev up, then idle down)
+            // Start low (50Hz)
+            osc1.frequency.setValueAtTime(50, t);
+            // Rev up quickly to 300Hz
+            osc1.frequency.exponentialRampToValueAtTime(300, t + 0.3); 
+            // Drop down to idle rumble (60Hz)
+            osc1.frequency.exponentialRampToValueAtTime(60, t + 1.5); 
+
+            // Oscillator 2: The "Grit" (Square wave, slightly detuned)
+            const osc2 = ctx.createOscillator();
+            osc2.type = 'square';
+            const osc2Gain = ctx.createGain();
+            osc2Gain.gain.value = 0.3; // Lower volume for this layer
+            osc2.connect(osc2Gain);
+            osc2Gain.connect(masterGain);
+
+            // Follows similar pitch curve but higher harmonics
+            osc2.frequency.setValueAtTime(80, t);
+            osc2.frequency.exponentialRampToValueAtTime(400, t + 0.3);
+            osc2.frequency.exponentialRampToValueAtTime(100, t + 1.5);
+
+            // Lowpass Filter (Muffles the harsh digital sounds to sound like an engine)
+            const filter = ctx.createBiquadFilter();
+            filter.type = 'lowpass';
+            filter.frequency.setValueAtTime(400, t); // Start muffled
+            filter.frequency.linearRampToValueAtTime(1500, t + 0.3); // Open up on rev
+            filter.frequency.linearRampToValueAtTime(500, t + 1.5); // Close back down
+            
+            // Re-route oscillators through filter
+            osc1.disconnect();
+            osc1.connect(filter);
+            osc2Gain.disconnect();
+            osc2Gain.connect(filter);
+            filter.connect(masterGain);
+
+            // Start
+            osc1.start(t);
+            osc2.start(t);
+
+            // Stop
+            osc1.stop(t + duration);
+            osc2.stop(t + duration);
+        }
+
+        // --- Event Listeners ---
+        els.testMode.addEventListener('change', (e) => {
+            isTestMode = e.target.checked;
+            hitStreak = 0;
+            missStreak = 0;
+            setReadyState(false);
+        });
+
+        // Run
+        init();
+
+    </script>
+</body>
+</html>
